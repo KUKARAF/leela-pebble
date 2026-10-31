@@ -8,7 +8,7 @@
   ],
   "private": true,
   "scripts": {
-    "test": "node test/leela.test.js"
+    "test": "node test/leela.test.js && node test/speech.test.js"
   },
   "dependencies": {
     "pebble-clay": "^1.0.4"
@@ -33,7 +33,13 @@
       "TEXT",
       "SERVER_URL",
       "DEVICE_TOKEN",
-      "SPEAK_REPLIES"
+      "SPEAK_REPLIES",
+      "SPEAK_QUALITY",
+      "CAN_SPEAK",
+      "AUDIO",
+      "AUDIO_FORMAT",
+      "AUDIO_POS",
+      "AUDIO_STOP"
     ],
     "resources": {
       "media": [

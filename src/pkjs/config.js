@@ -31,8 +31,20 @@ module.exports = [
         "type": "toggle",
         "messageKey": "SPEAK_REPLIES",
         "label": "Speak replies",
-        "description": "Not implemented yet (see README). Setting is stored for the future.",
+        "description": "Read the first part of each reply aloud through the watch speaker (Pebble Time 2). Needs a text-to-speech model selected on the server. Press BACK or SELECT to stop. Skipped silently if the speaker is muted or Quiet Time is on.",
         "defaultValue": false
+      },
+      {
+        "type": "select",
+        "messageKey": "SPEAK_QUALITY",
+        "label": "Voice quality",
+        "description": "Higher quality sends more data to the watch and may stutter over a slow Bluetooth link.",
+        "defaultValue": "fast",
+        "options": [
+          { "label": "Fast (8 kHz, 8 bit)", "value": "fast" },
+          { "label": "Good (8 kHz, 16 bit)", "value": "good" },
+          { "label": "Best (16 kHz, 16 bit)", "value": "best" }
+        ]
       }
     ]
   },

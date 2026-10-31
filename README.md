@@ -40,7 +40,8 @@ Open the app's settings from the Pebble phone app. All values live in the phone'
 | --- | --- | --- |
 | Server URL | `https://chat.osmosis.page` | |
 | Device token | empty | Long-lived bearer token starting `lpd_`. Never logged. |
-| Speak replies | off | Placeholder, see TTS below. |
+| Speak replies | off | Reads the start of each reply aloud through the watch speaker, see Spoken replies. |
+| Voice quality | Fast | Fast = 8 kHz 8-bit (8 KB/s), Good = 8 kHz 16-bit (16 KB/s), Best = 16 kHz 16-bit (32 KB/s). |
 
 ### Creating a device token
 
@@ -52,16 +53,29 @@ All requests carry `Authorization: Bearer <device_token>`; errors are `{"detail"
 
 - `POST /api/pebble/ask` body `{"text", "conversation_id"}` (text max 1000 chars) returns `{"id", "state"}`.
 - `GET /api/pebble/ask/{id}?offset=N` returns `{"state": pending|done|error, "text" (<=240 bytes), "next_offset", "done"}`. 404 = job expired; an `error` state's text is shown to the user.
-- Not used: `/api/pebble/stt` (built-in dictation is used instead) and `/api/pebble/tts` (see below).
+- Spoken replies (only when enabled): `POST /api/pebble/tts?format=pcm8k8|pcm8k|pcm16k|pcm16k8` body `{"text"}` returns `{"id", "state", "format", "sdk_format", "sample_rate", "bits", "bytes_per_sec", "chars", "segments"}` (501 = no TTS model configured on the server). `GET /api/pebble/tts/{id}?offset=N&limit=M` returns `{"state": pending|done|error, "data" (base64 PCM bytes N..N+M), "next_offset", "total" (null until finished), "done", "error"}`. The server speaks at most the first 400 characters and synthesises sentence-sized segments in parallel, so audio starts after the first segment while the rest is still being generated.
+- Not used: `/api/pebble/stt` (built-in dictation is used instead).
 
 Error handling: 401/403 "Token rejected", 429 "Slow down", 404 "reply expired", network failure, 90 s overall timeout.
 
 Rate limit: the server allows 20 req/min per device. PKJS polls once per second (up to ~60/min while a reply is pending), so a long reply can hit 429. On a 429 while polling it waits (`Retry-After` or 5 s) and retries up to 3 times before showing "Slow down". The interval is `POLL_INTERVAL_MS` in `src/pkjs/leela.js`.
 
+## Spoken replies
+
+With "Speak replies" on, after the text reply is on screen PKJS asks the server for speech and streams it to the watch speaker. The text flow is never blocked or changed by this; every failure (no TTS configured, network error, muted speaker, watch without speaker) just means no sound.
+
+- The watch tells PKJS whether it can speak (`CAN_SPEAK` in the ask message: speaker present and not muted).
+- PKJS creates a TTS job (`POST /api/pebble/tts?format=...`), downloads the PCM in 4 KB pages (base64 JSON) and forwards it in 480 byte AppMessages (`STATE`=7 `AUDIO`=bytes), between `STATE`=6 (`AUDIO_FORMAT` = SDK `SpeakerPcmFormat` value) and `STATE`=8 (end).
+- The watch keeps a 16 KB ring buffer, prebuffers ~0.25-0.5 s, then a 40 ms timer feeds `speaker_stream_write()`. If the speaker runs dry it rebuffers and reopens the stream. At the end it calls `speaker_stream_close()` so buffered audio finishes.
+- Flow control: the watch reports cumulative consumed bytes (`AUDIO_POS`); PKJS never lets more than 12 KB be unconsumed, so the ring cannot overflow and the whole clip never sits in RAM.
+- BACK or SELECT while speaking stops playback immediately (`AUDIO_STOP` tells the phone to stop downloading); the next BACK exits as usual and the next SELECT asks a question. Starting a new question also stops speech.
+- Audio format: the server resamples the TTS output to the SDK's `8kHz_8bit`, `8kHz_16bit` or `16kHz_16bit` raw signed PCM.
+- Server prerequisite: pick a TTS model (and voice) under Admin, Leela.
+
 ## Known limitations
 
 - Emery only (`targetPlatforms`). Other mic-equipped platforms would probably work but are untested.
-- Speak replies / TTS is NOT implemented (documented TODO). The Pebble Speaker API (SDK 4.9.169+, `PBL_SPEAKER`, emery and flint) only plays raw mono signed PCM (`SpeakerPcmFormat_8kHz/16kHz_8bit/16bit`). `/api/pebble/tts` returns `audio/mpeg`, and neither the watch nor PKJS can decode MP3. To do it, the server would need to offer raw PCM output (e.g. 16 kHz 16-bit, or u-law like Pebble-Wrist-AI uses), which PKJS would stream to the watch in AppMessage chunks into `speaker_stream_write()`.
+- Spoken replies are only attempted on watches with a speaker (emery here; the code is compiled out elsewhere) and are skipped silently when the speaker is muted or Quiet Time is on. Real playback quality, underrun behaviour and Bluetooth throughput have not been verified on hardware yet. Only the first ~400 characters of a reply are spoken.
 - The reply is shown only once complete (no live streaming to the watch).
 - The watch fonts cannot draw emoji or non-Latin scripts; curly quotes/dashes/bullets are mapped to ASCII and emoji dropped. Markdown is shown as plain text. Replies are truncated at ~4000 characters.
 - If the server splits a chunk in the middle of a multi-byte character the JSON already contains a replacement character; the app cannot repair that.

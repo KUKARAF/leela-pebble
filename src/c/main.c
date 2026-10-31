@@ -2,11 +2,18 @@
  *
  * Watch side: DictationSession (speech-to-text happens via the phone's Pebble app),
  * text goes to PKJS over AppMessage, PKJS talks to the server and pushes the reply back
- * in <=200 byte chunks. See README.md. */
+ * in <=200 byte chunks. With "Speak replies" on, PKJS then streams raw PCM which is played through
+ * the speaker (speaker_stream_*, Pebble Time 2 only). See README.md. */
 #include <pebble.h>
 
 /* Keep in sync with src/pkjs/index.js */
-enum { ST_READY = 1, ST_THINKING = 2, ST_CHUNK = 3, ST_DONE = 4, ST_ERROR = 5 };
+enum { ST_READY = 1, ST_THINKING = 2, ST_CHUNK = 3, ST_DONE = 4, ST_ERROR = 5,
+       ST_AUDIO_START = 6, ST_AUDIO_DATA = 7, ST_AUDIO_END = 8, ST_AUDIO_STOP = 9 };
+
+/* Watches with a speaker. Everything else compiles the audio code out and never asks for speech. */
+#if defined(PBL_PLATFORM_EMERY) || defined(PBL_PLATFORM_FLINT)
+#define HAVE_SPEAKER 1
+#endif
 
 typedef enum { UI_IDLE, UI_LISTENING, UI_THINKING, UI_REPLY, UI_ERROR } UiState;
 
@@ -61,7 +68,10 @@ static void dots_tick(void *ctx) {
   s_dots_timer = app_timer_register(450, dots_tick, NULL);
 }
 
+static void audio_stop(bool notify_phone);
+
 static void set_ui(UiState st) {
+  if (st != UI_REPLY) { audio_stop(true); }
   s_ui = st;
   if (s_dots_timer) { app_timer_cancel(s_dots_timer); s_dots_timer = NULL; }
   switch (st) {
@@ -95,6 +105,192 @@ static void show_error(const char *msg) {
   set_ui(UI_ERROR);
 }
 
+
+/* ---- spoken replies ----
+ * PKJS sends raw signed PCM in <=480 byte AppMessages (ST_AUDIO_DATA). They go into a ring buffer;
+ * a 40 ms timer moves what the speaker accepts from the ring into speaker_stream_write(). The
+ * phone never has more than 12 KB unconsumed on the watch (it learns our progress from AUDIO_POS),
+ * so the 16 KB ring cannot overflow. Playback starts after a small prebuffer to ride out gaps in
+ * the Bluetooth link; if the speaker runs dry mid-reply we rebuffer and reopen the stream.
+ * Anything that goes wrong just ends playback; the text reply is never affected. */
+#ifdef HAVE_SPEAKER
+#define RING_BYTES 16384
+#define AUDIO_VOLUME 80
+#define AUDIO_TICK_MS 40
+#define POS_REPORT_BYTES 2048
+#define CLOSE_TICKS_MAX 150   /* 6 s for the speaker to drain after close */
+
+static uint8_t s_ring[RING_BYTES];
+static size_t s_rhead, s_rtail, s_rcount;
+static bool s_audio_active, s_audio_end, s_stream_open, s_audio_closing;
+static SpeakerPcmFormat s_audio_fmt;
+static uint32_t s_audio_prebuffer;
+static uint32_t s_consumed, s_reported;
+static int s_close_ticks;
+static AppTimer *s_audio_timer;
+static AppTimer *s_stop_notify_timer;
+static int s_stop_notify_tries;
+
+static uint32_t audio_bytes_per_sec(SpeakerPcmFormat f) {
+  switch (f) {
+    case SpeakerPcmFormat_8kHz_8bit: return 8000;
+    case SpeakerPcmFormat_16kHz_8bit: return 16000;
+    case SpeakerPcmFormat_8kHz_16bit: return 16000;
+    default: return 32000;
+  }
+}
+
+static void send_phone_int(uint32_t key, int32_t v) {
+  DictionaryIterator *it;
+  if (app_message_outbox_begin(&it) != APP_MSG_OK) { return; }
+  dict_write_int32(it, key, v);
+  app_message_outbox_send();
+}
+
+static bool try_send_audio_pos(void) {
+  DictionaryIterator *it;
+  if (app_message_outbox_begin(&it) != APP_MSG_OK) { return false; }
+  dict_write_int32(it, MESSAGE_KEY_AUDIO_POS, (int32_t)s_consumed);
+  if (app_message_outbox_send() != APP_MSG_OK) { return false; }
+  s_reported = s_consumed;
+  return true;
+}
+
+static void notify_stop_tick(void *ctx) {
+  s_stop_notify_timer = NULL;
+  DictionaryIterator *it;
+  if (app_message_outbox_begin(&it) == APP_MSG_OK) {
+    dict_write_int32(it, MESSAGE_KEY_AUDIO_STOP, 1);
+    if (app_message_outbox_send() == APP_MSG_OK) { return; }
+  }
+  if (++s_stop_notify_tries < 6) {
+    s_stop_notify_timer = app_timer_register(250, notify_stop_tick, NULL);
+  }
+}
+
+static void audio_title(bool speaking) {
+  if (s_ui != UI_REPLY) { return; }
+  set_title(speaking ? "Leela - BACK to stop" : "Leela - SELECT to ask",
+            PBL_IF_COLOR_ELSE(GColorVividViolet, GColorBlack));
+}
+
+static void audio_stop(bool notify_phone) {
+  if (!s_audio_active) { return; }
+  s_audio_active = false;
+  if (s_audio_timer) { app_timer_cancel(s_audio_timer); s_audio_timer = NULL; }
+  if (s_stream_open) { speaker_stop(); }
+  s_stream_open = false;
+  s_audio_closing = false;
+  s_rhead = s_rtail = s_rcount = 0;
+  if (notify_phone) {
+    if (s_stop_notify_timer) { app_timer_cancel(s_stop_notify_timer); }
+    s_stop_notify_tries = 0;
+    notify_stop_tick(NULL);
+  }
+  audio_title(false);
+}
+
+static void speaker_finished(SpeakerFinishReason reason, void *ctx) {
+  if (!s_audio_active) { return; }
+  if (s_audio_closing || reason == SpeakerFinishReasonPreempted) {
+    audio_stop(reason == SpeakerFinishReasonPreempted);
+    return;
+  }
+  /* Ran dry (or errored) while more audio is still coming: rebuffer, then reopen. */
+  s_stream_open = false;
+}
+
+static void audio_tick(void *ctx) {
+  s_audio_timer = NULL;
+  if (!s_audio_active) { return; }
+
+  if (!s_stream_open && !s_audio_closing) {
+    if (s_rcount >= s_audio_prebuffer || (s_audio_end && s_rcount > 0)) {
+      if (!speaker_stream_open(s_audio_fmt, AUDIO_VOLUME)) { audio_stop(true); return; }
+      s_stream_open = true;
+    } else if (s_audio_end) {   /* nothing left to play */
+      audio_stop(false);
+      return;
+    }
+  }
+
+  if (s_stream_open && s_rcount > 0) {
+    size_t n = RING_BYTES - s_rtail;
+    if (n > s_rcount) { n = s_rcount; }
+    uint32_t w = speaker_stream_write(&s_ring[s_rtail], (uint32_t)n);
+    if (w > n) { w = (uint32_t)n; }
+    s_rtail = (s_rtail + w) % RING_BYTES;
+    s_rcount -= w;
+    s_consumed += w;
+  }
+
+  if (s_audio_end && s_stream_open && s_rcount == 0 && !s_audio_closing) {
+    speaker_stream_close();   /* buffered audio keeps playing; the finish callback ends us */
+    s_audio_closing = true;
+    s_close_ticks = 0;
+  }
+  if (s_audio_closing) {
+    if (++s_close_ticks > CLOSE_TICKS_MAX || speaker_get_status() == SpeakerStatusIdle) {
+      audio_stop(false);
+      return;
+    }
+  }
+
+  if (s_consumed - s_reported >= POS_REPORT_BYTES || (s_rcount == 0 && s_consumed != s_reported)) {
+    try_send_audio_pos();
+  }
+  s_audio_timer = app_timer_register(AUDIO_TICK_MS, audio_tick, NULL);
+}
+
+static void audio_start(int sdk_fmt) {
+  if (s_audio_active) { audio_stop(false); }
+  if (s_stop_notify_timer) { app_timer_cancel(s_stop_notify_timer); s_stop_notify_timer = NULL; }
+  if (s_ui != UI_REPLY || sdk_fmt < 0 || sdk_fmt >= SpeakerPcmFormatCount || speaker_is_muted()) {
+    send_phone_int(MESSAGE_KEY_AUDIO_STOP, 1);
+    return;
+  }
+  s_audio_fmt = (SpeakerPcmFormat)sdk_fmt;
+  uint32_t pre = audio_bytes_per_sec(s_audio_fmt) / 2;
+  s_audio_prebuffer = pre < 2048 ? 2048 : (pre > 8192 ? 8192 : pre);
+  s_rhead = s_rtail = s_rcount = 0;
+  s_consumed = s_reported = 0;
+  s_audio_end = s_stream_open = s_audio_closing = false;
+  s_audio_active = true;
+  audio_title(true);
+  s_audio_timer = app_timer_register(AUDIO_TICK_MS, audio_tick, NULL);
+}
+
+static void audio_data(const uint8_t *data, uint16_t len) {
+  if (!s_audio_active || s_audio_end) { return; }
+  size_t room = RING_BYTES - s_rcount;
+  size_t n = len < room ? len : room;   /* flow control keeps this from ever truncating */
+  for (size_t i = 0; i < n; i++) {
+    s_ring[s_rhead] = data[i];
+    s_rhead = (s_rhead + 1) % RING_BYTES;
+  }
+  s_rcount += n;
+}
+
+static void audio_init(void) { speaker_set_finish_callback(speaker_finished, NULL); }
+static void audio_deinit(void) {
+  audio_stop(false);
+  speaker_set_finish_callback(NULL, NULL);
+  if (s_stop_notify_timer) { app_timer_cancel(s_stop_notify_timer); }
+}
+static bool audio_can_speak(void) { return !speaker_is_muted(); }
+static bool audio_is_active(void) { return s_audio_active; }
+static void audio_mark_end(void) { s_audio_end = true; }
+#else
+static void audio_stop(bool notify_phone) {}
+static void audio_start(int sdk_fmt) {}
+static void audio_data(const uint8_t *data, uint16_t len) {}
+static void audio_init(void) {}
+static void audio_deinit(void) {}
+static bool audio_can_speak(void) { return false; }
+static bool audio_is_active(void) { return false; }
+static void audio_mark_end(void) {}
+#endif
+
 /* ---- watch -> phone ---- */
 static void try_send_ask(void *ctx);
 
@@ -115,6 +311,7 @@ static void try_send_ask(void *ctx) {
     return;
   }
   dict_write_cstring(it, MESSAGE_KEY_ASK, s_pending_ask);
+  dict_write_int32(it, MESSAGE_KEY_CAN_SPEAK, audio_can_speak() ? 1 : 0);
   if (app_message_outbox_send() != APP_MSG_OK) {
     show_error("Could not talk to the phone app.");
   }
@@ -157,6 +354,22 @@ static void inbox_received(DictionaryIterator *it, void *ctx) {
         vibes_short_pulse();
       }
       break;
+    case ST_AUDIO_START: {
+      Tuple *f = dict_find(it, MESSAGE_KEY_AUDIO_FORMAT);
+      audio_start(f ? (int)f->value->int32 : -1);
+      break;
+    }
+    case ST_AUDIO_DATA: {
+      Tuple *a = dict_find(it, MESSAGE_KEY_AUDIO);
+      if (a && a->type == TUPLE_BYTE_ARRAY) { audio_data(a->value->data, a->length); }
+      break;
+    }
+    case ST_AUDIO_END:
+      audio_mark_end();
+      break;
+    case ST_AUDIO_STOP:
+      audio_stop(false);
+      break;
     case ST_ERROR:
       show_error(tx ? tx->value->cstring : "Something went wrong.");
       vibes_double_pulse();
@@ -194,7 +407,14 @@ static void start_listening(void) {
 }
 
 /* ---- buttons ---- */
-static void select_click(ClickRecognizerRef r, void *c) { start_listening(); }
+static void select_click(ClickRecognizerRef r, void *c) {
+  if (audio_is_active()) { audio_stop(true); return; }   /* SELECT while speaking = stop */
+  start_listening();
+}
+static void back_click(ClickRecognizerRef r, void *c) {
+  if (audio_is_active()) { audio_stop(true); return; }   /* BACK while speaking = stop, stay in app */
+  window_stack_pop(true);
+}
 static void scroll_by(int dy) {
   GPoint o = scroll_layer_get_content_offset(s_scroll);
   o.y += dy;
@@ -204,6 +424,7 @@ static void up_click(ClickRecognizerRef r, void *c) { scroll_by(SCROLL_STEP); }
 static void down_click(ClickRecognizerRef r, void *c) { scroll_by(-SCROLL_STEP); }
 static void click_config(void *ctx) {
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
+  window_single_click_subscribe(BUTTON_ID_BACK, back_click);
   window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, up_click);
   window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 120, down_click);
 }
@@ -241,7 +462,8 @@ static void window_unload(Window *w) {
 static void init(void) {
   app_message_register_inbox_received(inbox_received);
   app_message_register_outbox_failed(outbox_failed);
-  app_message_open(512, DICTATION_BUF + 64);
+  app_message_open(600, DICTATION_BUF + 96);
+  audio_init();
 
   s_dictation = dictation_session_create(DICTATION_BUF, dictation_cb, NULL);
   dictation_session_enable_confirmation(s_dictation, true);
@@ -254,6 +476,7 @@ static void init(void) {
 }
 
 static void deinit(void) {
+  audio_deinit();
   dictation_session_destroy(s_dictation);
   window_destroy(s_window);
 }

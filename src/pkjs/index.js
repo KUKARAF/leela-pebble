@@ -2,11 +2,13 @@
 var Clay = require('pebble-clay');
 var clayConfig = require('./config');
 var leela = require('./leela');
+var speech = require('./speech');
 
 var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
 
 // Watch-side STATE values (keep in sync with src/c/main.c)
 var ST_READY = 1, ST_THINKING = 2, ST_CHUNK = 3, ST_DONE = 4, ST_ERROR = 5;
+// (audio states 6..9 live in speech.js)
 var WATCH_CHUNK_BYTES = 200;
 
 var DEFAULT_SERVER = 'https://chat.osmosis.page';
@@ -19,7 +21,8 @@ function getSettings() {
   return {
     serverUrl: (typeof s.SERVER_URL === 'string' && s.SERVER_URL) ? s.SERVER_URL : DEFAULT_SERVER,
     token: typeof s.DEVICE_TOKEN === 'string' ? s.DEVICE_TOKEN.replace(/^\s+|\s+$/g, '') : '',
-    speak: !!s.SPEAK_REPLIES
+    speak: !!s.SPEAK_REPLIES,
+    quality: typeof s.SPEAK_QUALITY === 'string' ? s.SPEAK_QUALITY : 'fast'
   };
 }
 
@@ -28,24 +31,35 @@ var outQueue = [], sending = false;
 function pump() {
   if (sending || !outQueue.length) { return; }
   sending = true;
-  var msg = outQueue[0], tries = 0;
+  var item = outQueue[0], tries = 0;
+  function next(cb) {
+    if (outQueue[0] === item) { outQueue.shift(); }
+    sending = false;
+    if (cb) { try { cb(); } catch (e) { console.log('send callback failed'); } }
+    pump();
+  }
   (function attempt() {
-    Pebble.sendAppMessage(msg, function () {
-      outQueue.shift(); sending = false; pump();
+    if (outQueue[0] !== item) { sending = false; pump(); return; } // queue was flushed
+    Pebble.sendAppMessage(item.msg, function () {
+      next(item.ok);
     }, function () {
       tries++;
-      if (tries >= 3) { outQueue.shift(); sending = false; pump(); }
+      if (tries >= 3) { next(item.fail); }
       else { setTimeout(attempt, 300 * tries); }
     });
   })();
 }
+function enqueue(msg, ok, fail) {
+  outQueue.push({ msg: msg, ok: ok, fail: fail });
+  pump();
+}
 function toWatch(state, text) {
   var m = { 'STATE': state };
   if (text !== undefined) { m['TEXT'] = text; }
-  outQueue.push(m);
-  pump();
+  enqueue(m);
 }
 function sendError(msg) {
+  stopSpeech();
   outQueue = [];
   toWatch(ST_ERROR, leela.trimTo(leela.normalizeText(msg), 200));
 }
@@ -73,9 +87,33 @@ var client = leela.createClient({
   now: function () { return new Date().getTime(); }
 });
 
-function handleAsk(text) {
+/* ---- spoken replies: best effort, never affects the text reply ---- */
+var speaker = speech.createSpeech({
+  request: request,
+  setTimeout: function (f, ms) { return setTimeout(f, ms); },
+  clearTimeout: function (h) { clearTimeout(h); },
+  now: function () { return new Date().getTime(); },
+  send: function (msg, ok, fail) { enqueue(msg, ok, fail); }
+});
+var currentSpeech = null;
+function stopSpeech() {
+  if (currentSpeech) { currentSpeech.cancel(); currentSpeech = null; }
+}
+function startSpeech(s, text) {
+  stopSpeech();
+  try {
+    var h = speaker.speak(
+      { serverUrl: s.serverUrl, token: s.token, text: text, format: speech.formatForQuality(s.quality) },
+      { onEnd: function (reason) { if (currentSpeech === h) { currentSpeech = null; } } }
+    );
+    currentSpeech = h;
+  } catch (e) { console.log('speech failed to start'); }
+}
+
+function handleAsk(text, canSpeak) {
   var s = getSettings();
   if (current) { current.cancel(); current = null; }
+  stopSpeech();
   if (!s.token) {
     sendError('No device token set. Open Leela settings in the Pebble app on your phone.');
     return;
@@ -91,6 +129,7 @@ function handleAsk(text) {
         reply = leela.trimTo(reply.replace(/^\s+|\s+$/g, '') || '(empty reply)', leela.MAX_REPLY_CHARS);
         leela.splitUtf8(reply, WATCH_CHUNK_BYTES).forEach(function (p) { toWatch(ST_CHUNK, p); });
         toWatch(ST_DONE);
+        if (s.speak && canSpeak) { startSpeech(s, reply); }
       },
       onError: function (msg) { current = null; sendError(msg); }
     }
@@ -102,8 +141,11 @@ Pebble.addEventListener('ready', function () {
 });
 
 Pebble.addEventListener('appmessage', function (e) {
-  var text = e.payload && e.payload['ASK'];
-  if (typeof text === 'string' && text.length) { handleAsk(text); }
+  var p = e.payload || {};
+  if (p['AUDIO_STOP']) { stopSpeech(); }   // user pressed BACK/SELECT while it was speaking
+  if (typeof p['AUDIO_POS'] === 'number' && currentSpeech) { currentSpeech.onWatchPos(p['AUDIO_POS']); }
+  var text = p['ASK'];
+  if (typeof text === 'string' && text.length) { handleAsk(text, !!p['CAN_SPEAK']); }
 });
 
 Pebble.addEventListener('showConfiguration', function () {
