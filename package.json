@@ -1,0 +1,49 @@
+{
+  "name": "leela-pebble",
+  "author": "rafa",
+  "version": "1.0.0",
+  "description": "Press one button, speak, get a reply from Leela.",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "scripts": {
+    "test": "node test/leela.test.js"
+  },
+  "dependencies": {
+    "pebble-clay": "^1.0.4"
+  },
+  "pebble": {
+    "displayName": "Leela",
+    "uuid": "3f6c1d2e-8a47-4b9e-9c35-7d1e5a0b42f8",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "capabilities": [
+      "configurable"
+    ],
+    "messageKeys": [
+      "ASK",
+      "STATE",
+      "TEXT",
+      "SERVER_URL",
+      "DEVICE_TOKEN",
+      "SPEAK_REPLIES"
+    ],
+    "resources": {
+      "media": [
+        {
+          "type": "bitmap",
+          "name": "MENU_ICON",
+          "file": "images/menu_icon.png",
+          "menuIcon": true
+        }
+      ]
+    }
+  }
+}
