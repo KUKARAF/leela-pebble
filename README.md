@@ -86,15 +86,16 @@ With "Speak replies" on, after the text reply is on screen PKJS asks the server 
 ## Timers
 
 Say "set a timer for 20 minutes" (optionally "for pasta"). The chat server starts a Home Assistant timer
-and remembers it; after every ask, and about once a minute while Leela is open, the phone fetches
-`GET /api/pebble/timer` and relays it to the watch. The watch keeps its own copy (persisted), so the
+(`timer.leela`) and remembers it; after every ask, and about once a minute while Leela is open, the phone
+fetches `GET /api/pebble/timer` and relays it to the watch. The watch keeps its own copy (persisted), so the
 countdown keeps running with no connection.
 
-- The countdown screen is the Timer+ face (`src/c/timerplus`, MIT, (c) Eric Phillips / Ycleptic Studios,
+- **The countdown is the home screen** (`0:00` when no timer is set). **Hold SELECT** to talk to Leela; the
+  reply appears over the countdown and BACK returns to it (BACK on the countdown leaves the app).
+- The face is Timer+ (`src/c/timerplus`, MIT, (c) Eric Phillips / Ycleptic Studios,
   https://github.com/YclepticStudios/pebble-timer-plus; licence in `licenses/`, Bebas Neue font is OFL).
-- The watch just mirrors the Home Assistant timer (`timer.leela`). A new timer, whether set by voice or
-  started in HA, opens its countdown automatically; BACK leaves it.
+- The watch just mirrors the Home Assistant timer. A new timer, whether set by voice or started in HA,
+  takes over the screen; a timer cancelled in HA disappears on the next sync.
 - Leela schedules wakeups (90 seconds before the end, and at the end) so it reopens and vibrates even if
   you closed it. Any button stops the alarm.
-- Display only: start/cancel timers by voice (or in HA). A timer cancelled or changed in Home Assistant shows up
-  on the next sync.
+- Display only: start/cancel timers by voice (or in HA).

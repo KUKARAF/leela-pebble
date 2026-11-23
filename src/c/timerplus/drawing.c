@@ -148,7 +148,7 @@ static void prv_render_header_text(GContext *ctx, GRect bounds) {
   const char *buff;
   if (timer_get_label()[0]) { // Leela: show what the timer is for
     buff = timer_get_label();
-  } else if (timer_is_chrono()) {
+  } else if (timer_is_set() && timer_is_chrono()) { // not set: just show 0:00
     buff = "Chrono";
   } else {
     buff = "Timer";

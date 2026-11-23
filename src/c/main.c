@@ -45,6 +45,7 @@ static int s_dots = 0;
 #define BODY_FONT_SMALL FONT_KEY_GOTHIC_24
 
 static void show_text(const char *text, const char *font_key) {
+  if (!s_scroll) { return; }   /* the reply window is not on screen */
   Layer *sl = scroll_layer_get_layer(s_scroll);
   GRect b = layer_get_bounds(sl);
   text_layer_set_font(s_body, fonts_get_system_font(font_key));
@@ -58,13 +59,14 @@ static void show_text(const char *text, const char *font_key) {
 }
 
 static void set_title(const char *t, GColor bg) {
+  if (!s_title) { return; }
   text_layer_set_text(s_title, t);
   text_layer_set_background_color(s_title, bg);
 }
 
 static void dots_tick(void *ctx) {
   s_dots_timer = NULL;
-  if (s_ui != UI_THINKING) { return; }
+  if (s_ui != UI_THINKING || !s_body) { return; }
   s_dots = (s_dots + 1) % 4;
   static const char *frames[4] = { "Thinking", "Thinking .", "Thinking . .", "Thinking . . ." };
   snprintf(s_status, sizeof(s_status), "%s", frames[s_dots]);
@@ -73,6 +75,7 @@ static void dots_tick(void *ctx) {
 }
 
 static void audio_stop(bool notify_phone);
+static void ensure_leela_window(void);
 
 static void set_ui(UiState st) {
   if (st != UI_REPLY) { audio_stop(true); }
@@ -106,6 +109,7 @@ static void set_ui(UiState st) {
 
 static void show_error(const char *msg) {
   snprintf(s_status, sizeof(s_status), "%s", msg);
+  ensure_leela_window();
   set_ui(UI_ERROR);
 }
 
@@ -354,6 +358,7 @@ static void inbox_received(DictionaryIterator *it, void *ctx) {
     case ST_DONE:
       if (s_ui == UI_THINKING) {
         if (s_reply_len == 0) { snprintf(s_reply, sizeof(s_reply), "(empty reply)"); }
+        ensure_leela_window();
         set_ui(UI_REPLY);
         vibes_short_pulse();
       }
@@ -364,10 +369,10 @@ static void inbox_received(DictionaryIterator *it, void *ctx) {
       Tuple *len = dict_find(it, MESSAGE_KEY_TIMER_LENGTH);
       Tuple *lb = dict_find(it, MESSAGE_KEY_TIMER_LABEL);
       int32_t f = fl ? fl->value->int32 : 0;
-      /* A new timer opens its countdown, except while the system dictation UI is up. */
+      /* A new timer takes over the screen, except while dictating or waiting for an answer. */
       timer_ui_apply_sync((f & TIMER_ACTIVE) != 0, (f & TIMER_PAUSED) != 0,
                           rem ? rem->value->int32 : 0, len ? len->value->int32 : 0,
-                          lb ? lb->value->cstring : "", s_ui != UI_LISTENING);
+                          lb ? lb->value->cstring : "", s_ui != UI_LISTENING && s_ui != UI_THINKING);
       break;
     }
     case ST_AUDIO_START: {
@@ -407,7 +412,8 @@ static void dictation_cb(DictationSession *session, DictationSessionStatus statu
   /* Cancelled by the user: go back to where we were without a scary message. */
   if (status == DictationSessionStatusFailureTranscriptionRejected ||
       status == DictationSessionStatusFailureSystemAborted) {
-    set_ui(s_reply_len ? UI_REPLY : UI_IDLE);
+    if (s_reply_len) { set_ui(UI_REPLY); }
+    else { set_ui(UI_IDLE); window_stack_remove(s_window, true); }   /* back to the countdown */
     return;
   }
   switch (status) {
@@ -484,7 +490,7 @@ static void window_load(Window *w) {
   scroll_layer_add_child(s_scroll, text_layer_get_layer(s_body));
   layer_add_child(root, scroll_layer_get_layer(s_scroll));
 
-  set_ui(UI_IDLE);
+  set_ui(s_ui);   /* a reply may be pending while the window was away */
 }
 
 static void window_unload(Window *w) {
@@ -493,6 +499,19 @@ static void window_unload(Window *w) {
   text_layer_destroy(s_body);
   scroll_layer_destroy(s_scroll);
   text_layer_destroy(s_title);
+  s_body = NULL; s_scroll = NULL; s_title = NULL;
+}
+
+static void ensure_leela_window(void) {
+  if (!window_stack_contains_window(s_window)) { window_stack_push(s_window, true); }
+}
+static void close_leela_window(void) {
+  if (window_stack_contains_window(s_window)) { window_stack_remove(s_window, true); }
+}
+/* Hold SELECT on the countdown: open the reply window and start dictating. */
+static void ask_from_timer(void) {
+  ensure_leela_window();
+  start_listening();
 }
 
 static void init(void) {
@@ -509,8 +528,9 @@ static void init(void) {
   s_window = window_create();
   window_set_click_config_provider(s_window, click_config);
   window_set_window_handlers(s_window, (WindowHandlers){ .load = window_load, .unload = window_unload });
-  window_stack_push(s_window, true);
-  timer_ui_handle_launch();
+  timer_ui_set_ask_handler(ask_from_timer);
+  timer_ui_set_overlay_closer(close_leela_window);
+  timer_ui_handle_launch();   /* the countdown is the home screen; replies go over it */
 }
 
 static void deinit(void) {

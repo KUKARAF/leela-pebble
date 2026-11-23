@@ -6,9 +6,16 @@
 #pragma once
 #include <pebble.h>
 
-/* Load the persisted timer and subscribe to wakeups. Call before pushing the main window. */
+/* The countdown is Leela's home screen: it is always the bottom window (0:00 when no timer is set)
+ * and the reply/error window is pushed over it. Hold SELECT on it starts voice input. */
+
+/* Callbacks into main.c: start voice input; close the reply window (so a new timer shows). */
+void timer_ui_set_ask_handler(void (*ask)(void));
+void timer_ui_set_overlay_closer(void (*close_overlay)(void));
+
+/* Load the persisted timer and subscribe to wakeups. */
 void timer_ui_init(void);
-/* After the main window is pushed: if we were launched by a wakeup, show the timer. */
+/* Push the countdown as the root window; if a wakeup launched us, handle it. */
 void timer_ui_handle_launch(void);
 /* Persist the timer and (re)schedule wakeups. */
 void timer_ui_deinit(void);
@@ -18,5 +25,5 @@ void timer_ui_deinit(void);
 void timer_ui_apply_sync(bool active, bool paused, int32_t remaining_ms, int32_t length_ms,
                          const char *label, bool may_open);
 
-/* Push the countdown window (no-op without a timer). */
+/* Bring the countdown to the top. */
 void timer_ui_show(void);

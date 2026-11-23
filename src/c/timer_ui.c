@@ -14,6 +14,11 @@ enum { WAKE_NEAR = 1, WAKE_END = 2 };
 static Window *s_win;
 static Layer *s_layer;
 static AppTimer *s_tick;
+static void (*s_ask)(void);
+static void (*s_close_overlay)(void);
+
+void timer_ui_set_ask_handler(void (*ask)(void)) { s_ask = ask; }
+void timer_ui_set_overlay_closer(void (*close_overlay)(void)) { s_close_overlay = close_overlay; }
 
 /* Timer+'s drawing code asks the app which mode it is in: this screen only ever counts. */
 ControlMode main_get_control_mode(void) { return ControlModeCounting; }
@@ -40,10 +45,6 @@ static void wakeup_handler(WakeupId id, int32_t cookie) {
 static void tick(void *ctx) {
   s_tick = NULL;
   if (!s_win || !window_stack_contains_window(s_win)) { return; }
-  if (!timer_is_set()) {            /* cancelled elsewhere */
-    window_stack_remove(s_win, true);
-    return;
-  }
   timer_check_elapsed();
   drawing_update();
   layer_mark_dirty(s_layer);
@@ -59,22 +60,30 @@ static void restart_tick(void) {
   tick(NULL);
 }
 
+/* Ringing, or past its end and still counting up. */
+static bool is_ringing(void) { return timer_is_set() && timer_is_chrono(); }
+
 static void dismiss(void) {
   vibes_cancel();
   timer_reset();
   timer_set_label("");
   timer_persist_store();
   wakeup_cancel_all();
-  if (s_win) { window_stack_remove(s_win, true); }
+  restart_tick();   /* back to 0:00 */
 }
 
 static void any_click(ClickRecognizerRef r, void *c) {
-  if (timer_is_chrono()) { dismiss(); }   /* ringing (or past the end): any button stops it */
+  if (is_ringing()) { dismiss(); }   /* any button stops the alarm */
 }
 static void back_click(ClickRecognizerRef r, void *c) {
-  if (timer_is_chrono()) { dismiss(); } else { window_stack_pop(true); }
+  if (is_ringing()) { dismiss(); } else { window_stack_pop(true); }   /* last window: leaves the app */
+}
+static void select_hold(ClickRecognizerRef r, void *c) {
+  if (is_ringing()) { dismiss(); return; }
+  if (s_ask) { s_ask(); }
 }
 static void click_config(void *ctx) {
+  window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_hold, NULL);
   window_single_click_subscribe(BUTTON_ID_SELECT, any_click);
   window_single_click_subscribe(BUTTON_ID_UP, any_click);
   window_single_click_subscribe(BUTTON_ID_DOWN, any_click);
@@ -103,10 +112,13 @@ static void ensure_window(void) {
 }
 
 void timer_ui_show(void) {
-  if (!timer_is_set()) { return; }
   ensure_window();
-  if (window_stack_contains_window(s_win)) { restart_tick(); return; }
-  window_stack_push(s_win, true);
+  if (!window_stack_contains_window(s_win)) {
+    window_stack_push(s_win, true);
+  } else if (window_stack_get_top_window() != s_win && s_close_overlay) {
+    s_close_overlay();   /* a reply/error window is on top: take it away */
+  }
+  restart_tick();
 }
 
 /* ---- lifecycle ---- */
@@ -116,6 +128,7 @@ void timer_ui_init(void) {
 }
 
 void timer_ui_handle_launch(void) {
+  timer_ui_show();   /* the countdown is always the home screen */
   if (launch_reason() == APP_LAUNCH_WAKEUP) {
     WakeupId id;
     int32_t cookie;

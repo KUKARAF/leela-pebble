@@ -62,7 +62,8 @@ int64_t timer_get_value_ms(void) {
 }
 
 // Get the total timer time in milliseconds
-int64_t timer_get_length_ms(void) { return timer_data.length_ms; }
+// Never 0: the progress ring divides by this (Leela shows 0:00 when no timer is set)
+int64_t timer_get_length_ms(void) { return timer_data.length_ms > 0 ? timer_data.length_ms : 1; }
 
 // Check if the timer is vibrating
 bool timer_is_vibrating(void) {
