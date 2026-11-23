@@ -92,9 +92,9 @@ countdown keeps running with no connection.
 
 - The countdown screen is the Timer+ face (`src/c/timerplus`, MIT, (c) Eric Phillips / Ycleptic Studios,
   https://github.com/YclepticStudios/pebble-timer-plus; licence in `licenses/`, Bebas Neue font is OFL).
-- A timer you just set opens its countdown automatically. Hold SELECT on the main screen to reopen it,
-  BACK to leave it.
+- The watch just mirrors the Home Assistant timer (`timer.leela`). A new timer, whether set by voice or
+  started in HA, opens its countdown automatically; BACK leaves it.
 - Leela schedules wakeups (90 seconds before the end, and at the end) so it reopens and vibrates even if
   you closed it. Any button stops the alarm.
-- Display only: start/cancel timers by voice. A timer cancelled or changed in Home Assistant shows up
+- Display only: start/cancel timers by voice (or in HA). A timer cancelled or changed in Home Assistant shows up
   on the next sync.

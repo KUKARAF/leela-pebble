@@ -102,8 +102,6 @@ static void ensure_window(void) {
   drawing_initialize(s_layer);
 }
 
-bool timer_ui_has_timer(void) { return timer_is_set(); }
-
 void timer_ui_show(void) {
   if (!timer_is_set()) { return; }
   ensure_window();
@@ -137,7 +135,7 @@ void timer_ui_deinit(void) {
 
 /* ---- phone sync ---- */
 void timer_ui_apply_sync(bool active, bool paused, int32_t remaining_ms, int32_t length_ms,
-                         const char *label, bool open) {
+                         const char *label, bool may_open) {
   const char *lbl = label ? label : "";
   bool had = timer_is_set();
   if (!active) {
@@ -153,8 +151,9 @@ void timer_ui_apply_sync(bool active, bool paused, int32_t remaining_ms, int32_t
     return;
   }
   int64_t diff = timer_get_value_ms() - remaining_ms;
-  bool differs = !had || timer_is_chrono() || timer_is_paused() != paused ||
-                 llabs(diff) > SYNC_TOLERANCE_MS || timer_get_length_ms() != length_ms ||
+  /* A different timer (vs. the same one drifting or being paused/resumed): worth showing. */
+  bool is_new = !had || timer_is_chrono() || timer_get_length_ms() != length_ms;
+  bool differs = is_new || timer_is_paused() != paused || llabs(diff) > SYNC_TOLERANCE_MS ||
                  strcmp(timer_get_label(), lbl) != 0;
   if (differs) {
     timer_set_remote(remaining_ms, length_ms, paused);
@@ -162,7 +161,7 @@ void timer_ui_apply_sync(bool active, bool paused, int32_t remaining_ms, int32_t
     timer_persist_store();
     schedule_wakeups();
   }
-  if (open && differs) {
+  if (is_new && may_open) {
     timer_ui_show();
   } else if (differs && s_win && window_stack_contains_window(s_win)) {
     restart_tick();

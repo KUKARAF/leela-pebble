@@ -12,7 +12,7 @@ enum { ST_READY = 1, ST_THINKING = 2, ST_CHUNK = 3, ST_DONE = 4, ST_ERROR = 5,
        ST_AUDIO_START = 6, ST_AUDIO_DATA = 7, ST_AUDIO_END = 8, ST_AUDIO_STOP = 9,
        ST_TIMER = 10 };
 /* TIMER_FLAGS bits */
-enum { TIMER_ACTIVE = 1, TIMER_PAUSED = 2, TIMER_OPEN = 4 };
+enum { TIMER_ACTIVE = 1, TIMER_PAUSED = 2 };
 
 /* Watches with a speaker. Everything else compiles the audio code out and never asks for speech. */
 #if defined(PBL_PLATFORM_EMERY) || defined(PBL_PLATFORM_FLINT)
@@ -81,8 +81,7 @@ static void set_ui(UiState st) {
   switch (st) {
     case UI_IDLE:
       set_title("Leela", PBL_IF_COLOR_ELSE(GColorVividViolet, GColorBlack));
-      show_text(timer_ui_has_timer() ? "Press SELECT to talk to Leela\n\nHold SELECT: timer"
-                                     : "Press SELECT to talk to Leela", BODY_FONT);
+      show_text("Press SELECT to talk to Leela", BODY_FONT);
       break;
     case UI_LISTENING:
       set_title("Listening", PBL_IF_COLOR_ELSE(GColorRed, GColorBlack));
@@ -365,9 +364,10 @@ static void inbox_received(DictionaryIterator *it, void *ctx) {
       Tuple *len = dict_find(it, MESSAGE_KEY_TIMER_LENGTH);
       Tuple *lb = dict_find(it, MESSAGE_KEY_TIMER_LABEL);
       int32_t f = fl ? fl->value->int32 : 0;
+      /* A new timer opens its countdown, except while the system dictation UI is up. */
       timer_ui_apply_sync((f & TIMER_ACTIVE) != 0, (f & TIMER_PAUSED) != 0,
                           rem ? rem->value->int32 : 0, len ? len->value->int32 : 0,
-                          lb ? lb->value->cstring : "", (f & TIMER_OPEN) != 0);
+                          lb ? lb->value->cstring : "", s_ui != UI_LISTENING);
       break;
     }
     case ST_AUDIO_START: {
@@ -458,9 +458,7 @@ static void scroll_by(int dy) {
 }
 static void up_click(ClickRecognizerRef r, void *c) { scroll_by(SCROLL_STEP); }
 static void down_click(ClickRecognizerRef r, void *c) { scroll_by(-SCROLL_STEP); }
-static void select_long_click(ClickRecognizerRef r, void *c) { timer_ui_show(); }
 static void click_config(void *ctx) {
-  window_long_click_subscribe(BUTTON_ID_SELECT, 600, select_long_click, NULL);
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
   window_single_click_subscribe(BUTTON_ID_BACK, back_click);
   window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, up_click);
@@ -489,11 +487,6 @@ static void window_load(Window *w) {
   set_ui(UI_IDLE);
 }
 
-/* The hint on the idle screen depends on whether a timer exists: refresh it when we come back. */
-static void window_appear(Window *w) {
-  if (s_ui == UI_IDLE) { set_ui(UI_IDLE); }
-}
-
 static void window_unload(Window *w) {
   if (s_dots_timer) { app_timer_cancel(s_dots_timer); }
   if (s_outbox_retry) { app_timer_cancel(s_outbox_retry); }
@@ -515,7 +508,7 @@ static void init(void) {
 
   s_window = window_create();
   window_set_click_config_provider(s_window, click_config);
-  window_set_window_handlers(s_window, (WindowHandlers){ .load = window_load, .appear = window_appear, .unload = window_unload });
+  window_set_window_handlers(s_window, (WindowHandlers){ .load = window_load, .unload = window_unload });
   window_stack_push(s_window, true);
   timer_ui_handle_launch();
 }

@@ -131,7 +131,7 @@ function handleAsk(text, canSpeak) {
         reply = leela.trimTo(reply.replace(/^\s+|\s+$/g, '') || '(empty reply)', leela.MAX_REPLY_CHARS);
         leela.splitUtf8(reply, WATCH_CHUNK_BYTES).forEach(function (p) { toWatch(ST_CHUNK, p); });
         toWatch(ST_DONE);
-        syncTimer(true); // a timer set by this request opens its countdown on the watch
+        syncTimer(); // pick up a timer set by this request right away
         if (s.speak && canSpeak) { startSpeech(s, reply); }
       },
       onError: function (msg) { current = null; sendError(msg); }
@@ -140,18 +140,18 @@ function handleAsk(text, canSpeak) {
 }
 
 /* ---- timer: the server/HA own it; the watch keeps a local copy and just re-syncs ---- */
-function syncTimer(open) {
+function syncTimer() {
   var s = getSettings();
   if (!s.token) { return; }
   timerSync.fetchTimer({ request: request },
-    { serverUrl: s.serverUrl, token: s.token, open: open, normalize: leela.normalizeText },
+    { serverUrl: s.serverUrl, token: s.token, normalize: leela.normalizeText },
     function (msg) { enqueue(msg); });
 }
-setInterval(function () { syncTimer(false); }, TIMER_POLL_MS);
+setInterval(syncTimer, TIMER_POLL_MS);
 
 Pebble.addEventListener('ready', function () {
   toWatch(ST_READY);
-  syncTimer(false);
+  syncTimer();
 });
 
 Pebble.addEventListener('appmessage', function (e) {

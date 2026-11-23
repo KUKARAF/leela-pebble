@@ -8,7 +8,7 @@
 'use strict';
 
 var ST_TIMER = 10;
-var FLAG_ACTIVE = 1, FLAG_PAUSED = 2, FLAG_OPEN = 4;
+var FLAG_ACTIVE = 1, FLAG_PAUSED = 2;
 var MAX_MS = 86400000;
 var MAX_LABEL = 60;
 
@@ -27,13 +27,12 @@ function cleanLabel(s, normalize) {
 }
 
 /* Server body -> AppMessage dictionary (or null if the body is not a timer status). */
-function buildMessage(body, open, normalize) {
+function buildMessage(body, normalize) {
   if (!body || typeof body !== 'object' || typeof body.active !== 'boolean') { return null; }
   var active = body.active;
   var flags = 0;
   if (active) { flags |= FLAG_ACTIVE; }
   if (active && body.paused === true) { flags |= FLAG_PAUSED; }
-  if (active && open) { flags |= FLAG_OPEN; }
   var msg = { 'STATE': ST_TIMER, 'TIMER_FLAGS': flags };
   if (active) {
     msg['TIMER_REMAINING'] = clampMs(body.remaining_ms);
@@ -43,14 +42,14 @@ function buildMessage(body, open, normalize) {
   return msg;
 }
 
-/* opts: {serverUrl, token, open, normalize}; env: {request}. cb(msg) only on success. */
+/* opts: {serverUrl, token, normalize}; env: {request}. cb(msg) only on success. */
 function fetchTimer(env, opts, cb) {
   var base = String(opts.serverUrl || '').replace(/\/+$/, '');
   if (!base || !opts.token) { return; }
   env.request('GET', base + '/api/pebble/timer', { 'Authorization': 'Bearer ' + opts.token }, null,
               function (status, body) {
     if (status < 200 || status >= 300) { return; }
-    var msg = buildMessage(body, !!opts.open, opts.normalize);
+    var msg = buildMessage(body, opts.normalize);
     if (msg) { cb(msg); }
   });
 }
@@ -59,7 +58,6 @@ module.exports = {
   ST_TIMER: ST_TIMER,
   FLAG_ACTIVE: FLAG_ACTIVE,
   FLAG_PAUSED: FLAG_PAUSED,
-  FLAG_OPEN: FLAG_OPEN,
   buildMessage: buildMessage,
   fetchTimer: fetchTimer
 };
