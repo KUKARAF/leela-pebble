@@ -90,6 +90,7 @@ Say "set a timer for 20 minutes" (optionally "for pasta"). The chat server start
 fetches `GET /api/pebble/timer` and relays it to the watch. The watch keeps its own copy (persisted), so the
 countdown keeps running with no connection.
 
+- **Quick launch** (a long-press SELECT shortcut from the watch face) starts voice input immediately.
 - **The countdown is the home screen** (`0:00` when no timer is set). **Hold SELECT** to talk to Leela; the
   reply appears over the countdown and BACK returns to it (BACK on the countdown leaves the app).
 - The face is Timer+ (`src/c/timerplus`, MIT, (c) Eric Phillips / Ycleptic Studios,

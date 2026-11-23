@@ -25,5 +25,7 @@ void timer_ui_deinit(void);
 void timer_ui_apply_sync(bool active, bool paused, int32_t remaining_ms, int32_t length_ms,
                          const char *label, bool may_open);
 
+/* True while the timer is ringing (or counting up past its end). */
+bool timer_ui_is_ringing(void);
 /* Bring the countdown to the top. */
 void timer_ui_show(void);

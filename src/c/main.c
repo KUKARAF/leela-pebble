@@ -514,6 +514,12 @@ static void ask_from_timer(void) {
   start_listening();
 }
 
+/* Quick launch (long-press SELECT on the watch face) means "talk to Leela now": start voice input once
+ * the system launch animation has finished. */
+static void quick_launch_listen(void *ctx) {
+  if (!timer_ui_is_ringing()) { ask_from_timer(); }   /* a ringing alarm comes first */
+}
+
 static void init(void) {
   app_message_register_inbox_received(inbox_received);
   app_message_register_outbox_failed(outbox_failed);
@@ -531,6 +537,7 @@ static void init(void) {
   timer_ui_set_ask_handler(ask_from_timer);
   timer_ui_set_overlay_closer(close_leela_window);
   timer_ui_handle_launch();   /* the countdown is the home screen; replies go over it */
+  if (launch_reason() == APP_LAUNCH_QUICK_LAUNCH) { app_timer_register(400, quick_launch_listen, NULL); }
 }
 
 static void deinit(void) {

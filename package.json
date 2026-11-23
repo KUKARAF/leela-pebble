@@ -1,7 +1,7 @@
 {
   "name": "leela-pebble",
   "author": "rafa",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Press one button, speak, get a reply from Leela.",
   "keywords": [
     "pebble-app"

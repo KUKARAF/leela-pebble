@@ -63,6 +63,8 @@ static void restart_tick(void) {
 /* Ringing, or past its end and still counting up. */
 static bool is_ringing(void) { return timer_is_set() && timer_is_chrono(); }
 
+bool timer_ui_is_ringing(void) { return is_ringing(); }
+
 static void dismiss(void) {
   vibes_cancel();
   timer_reset();
