@@ -1,17 +1,18 @@
 {
   "name": "leela-pebble",
   "author": "rafa",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Press one button, speak, get a reply from Leela.",
   "keywords": [
     "pebble-app"
   ],
   "private": true,
   "scripts": {
-    "test": "node test/leela.test.js && node test/speech.test.js"
+    "test": "node test/leela.test.js && node test/speech.test.js && node test/timer.test.js"
   },
   "dependencies": {
-    "pebble-clay": "^1.0.4"
+    "pebble-clay": "^1.0.4",
+    "pebble-scalable": "^2.2.0"
   },
   "pebble": {
     "displayName": "Leela",
@@ -39,7 +40,11 @@
       "AUDIO",
       "AUDIO_FORMAT",
       "AUDIO_POS",
-      "AUDIO_STOP"
+      "AUDIO_STOP",
+      "TIMER_FLAGS",
+      "TIMER_REMAINING",
+      "TIMER_LENGTH",
+      "TIMER_LABEL"
     ],
     "resources": {
       "media": [
@@ -48,6 +53,12 @@
           "name": "MENU_ICON",
           "file": "images/menu_icon.png",
           "menuIcon": true
+        },
+        {
+          "type": "font",
+          "name": "BEBAS_FONT_35",
+          "file": "fonts/bebas_neue_regular.ttf",
+          "characterRegex": "[0-9: ]"
         }
       ]
     }

@@ -5,10 +5,14 @@
  * in <=200 byte chunks. With "Speak replies" on, PKJS then streams raw PCM which is played through
  * the speaker (speaker_stream_*, Pebble Time 2 only). See README.md. */
 #include <pebble.h>
+#include "timer_ui.h"
 
 /* Keep in sync with src/pkjs/index.js */
 enum { ST_READY = 1, ST_THINKING = 2, ST_CHUNK = 3, ST_DONE = 4, ST_ERROR = 5,
-       ST_AUDIO_START = 6, ST_AUDIO_DATA = 7, ST_AUDIO_END = 8, ST_AUDIO_STOP = 9 };
+       ST_AUDIO_START = 6, ST_AUDIO_DATA = 7, ST_AUDIO_END = 8, ST_AUDIO_STOP = 9,
+       ST_TIMER = 10 };
+/* TIMER_FLAGS bits */
+enum { TIMER_ACTIVE = 1, TIMER_PAUSED = 2, TIMER_OPEN = 4 };
 
 /* Watches with a speaker. Everything else compiles the audio code out and never asks for speech. */
 #if defined(PBL_PLATFORM_EMERY) || defined(PBL_PLATFORM_FLINT)
@@ -77,7 +81,8 @@ static void set_ui(UiState st) {
   switch (st) {
     case UI_IDLE:
       set_title("Leela", PBL_IF_COLOR_ELSE(GColorVividViolet, GColorBlack));
-      show_text("Press SELECT to talk to Leela", BODY_FONT);
+      show_text(timer_ui_has_timer() ? "Press SELECT to talk to Leela\n\nHold SELECT: timer"
+                                     : "Press SELECT to talk to Leela", BODY_FONT);
       break;
     case UI_LISTENING:
       set_title("Listening", PBL_IF_COLOR_ELSE(GColorRed, GColorBlack));
@@ -354,6 +359,17 @@ static void inbox_received(DictionaryIterator *it, void *ctx) {
         vibes_short_pulse();
       }
       break;
+    case ST_TIMER: {
+      Tuple *fl = dict_find(it, MESSAGE_KEY_TIMER_FLAGS);
+      Tuple *rem = dict_find(it, MESSAGE_KEY_TIMER_REMAINING);
+      Tuple *len = dict_find(it, MESSAGE_KEY_TIMER_LENGTH);
+      Tuple *lb = dict_find(it, MESSAGE_KEY_TIMER_LABEL);
+      int32_t f = fl ? fl->value->int32 : 0;
+      timer_ui_apply_sync((f & TIMER_ACTIVE) != 0, (f & TIMER_PAUSED) != 0,
+                          rem ? rem->value->int32 : 0, len ? len->value->int32 : 0,
+                          lb ? lb->value->cstring : "", (f & TIMER_OPEN) != 0);
+      break;
+    }
     case ST_AUDIO_START: {
       Tuple *f = dict_find(it, MESSAGE_KEY_AUDIO_FORMAT);
       audio_start(f ? (int)f->value->int32 : -1);
@@ -378,8 +394,10 @@ static void inbox_received(DictionaryIterator *it, void *ctx) {
 }
 
 /* ---- dictation ---- */
+static AppTimer *s_listen_timer;
 static void dictation_cb(DictationSession *session, DictationSessionStatus status,
                          char *transcription, void *ctx) {
+  if (s_listen_timer) { app_timer_cancel(s_listen_timer); s_listen_timer = NULL; }
   if (status == DictationSessionStatusSuccess) {
     snprintf(s_pending_ask, sizeof(s_pending_ask), "%s", transcription);
     set_ui(UI_THINKING);
@@ -400,10 +418,28 @@ static void dictation_cb(DictationSession *session, DictationSessionStatus statu
   }
 }
 
+#define LISTEN_WATCHDOG_MS 45000
+static void listen_timeout(void *ctx) {
+  s_listen_timer = NULL;
+  if (s_ui != UI_LISTENING) { return; }
+  /* The system dictation UI never reported back: say so instead of hanging. */
+  dictation_session_stop(s_dictation);
+  show_error("Dictation did not respond. Check the phone is connected and voice input works in the Pebble app. SELECT to retry.");
+}
+
 static void start_listening(void) {
-  if (s_ui == UI_LISTENING || s_ui == UI_THINKING) { return; }
+  if (s_ui == UI_THINKING) { return; }
+  if (s_listen_timer) { app_timer_cancel(s_listen_timer); s_listen_timer = NULL; }
+  if (s_ui == UI_LISTENING) { dictation_session_stop(s_dictation); } /* stuck: restart */
   set_ui(UI_LISTENING);
-  dictation_session_start(s_dictation);
+  DictationSessionStatus r = dictation_session_start(s_dictation);
+  if (r != DictationSessionStatusSuccess) {
+    char m[64];
+    snprintf(m, sizeof(m), "Could not start dictation (code %d). SELECT to retry.", (int)r);
+    show_error(m);
+    return;
+  }
+  s_listen_timer = app_timer_register(LISTEN_WATCHDOG_MS, listen_timeout, NULL);
 }
 
 /* ---- buttons ---- */
@@ -422,7 +458,9 @@ static void scroll_by(int dy) {
 }
 static void up_click(ClickRecognizerRef r, void *c) { scroll_by(SCROLL_STEP); }
 static void down_click(ClickRecognizerRef r, void *c) { scroll_by(-SCROLL_STEP); }
+static void select_long_click(ClickRecognizerRef r, void *c) { timer_ui_show(); }
 static void click_config(void *ctx) {
+  window_long_click_subscribe(BUTTON_ID_SELECT, 600, select_long_click, NULL);
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
   window_single_click_subscribe(BUTTON_ID_BACK, back_click);
   window_single_repeating_click_subscribe(BUTTON_ID_UP, 120, up_click);
@@ -451,6 +489,11 @@ static void window_load(Window *w) {
   set_ui(UI_IDLE);
 }
 
+/* The hint on the idle screen depends on whether a timer exists: refresh it when we come back. */
+static void window_appear(Window *w) {
+  if (s_ui == UI_IDLE) { set_ui(UI_IDLE); }
+}
+
 static void window_unload(Window *w) {
   if (s_dots_timer) { app_timer_cancel(s_dots_timer); }
   if (s_outbox_retry) { app_timer_cancel(s_outbox_retry); }
@@ -464,18 +507,21 @@ static void init(void) {
   app_message_register_outbox_failed(outbox_failed);
   app_message_open(600, DICTATION_BUF + 96);
   audio_init();
+  timer_ui_init();
 
   s_dictation = dictation_session_create(DICTATION_BUF, dictation_cb, NULL);
-  dictation_session_enable_confirmation(s_dictation, true);
+  dictation_session_enable_confirmation(s_dictation, false);
   dictation_session_enable_error_dialogs(s_dictation, false);
 
   s_window = window_create();
   window_set_click_config_provider(s_window, click_config);
-  window_set_window_handlers(s_window, (WindowHandlers){ .load = window_load, .unload = window_unload });
+  window_set_window_handlers(s_window, (WindowHandlers){ .load = window_load, .appear = window_appear, .unload = window_unload });
   window_stack_push(s_window, true);
+  timer_ui_handle_launch();
 }
 
 static void deinit(void) {
+  timer_ui_deinit();
   audio_deinit();
   dictation_session_destroy(s_dictation);
   window_destroy(s_window);

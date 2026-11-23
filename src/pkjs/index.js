@@ -3,6 +3,7 @@ var Clay = require('pebble-clay');
 var clayConfig = require('./config');
 var leela = require('./leela');
 var speech = require('./speech');
+var timerSync = require('./timer');
 
 var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
 
@@ -12,6 +13,7 @@ var ST_READY = 1, ST_THINKING = 2, ST_CHUNK = 3, ST_DONE = 4, ST_ERROR = 5;
 var WATCH_CHUNK_BYTES = 200;
 
 var DEFAULT_SERVER = 'https://chat.osmosis.page';
+var TIMER_POLL_MS = 60000; // re-sync the timer with the server about once a minute while Leela is open
 var conversationId = leela.newConversationId(); // one per app launch, reused for follow-ups
 var current = null;
 
@@ -129,6 +131,7 @@ function handleAsk(text, canSpeak) {
         reply = leela.trimTo(reply.replace(/^\s+|\s+$/g, '') || '(empty reply)', leela.MAX_REPLY_CHARS);
         leela.splitUtf8(reply, WATCH_CHUNK_BYTES).forEach(function (p) { toWatch(ST_CHUNK, p); });
         toWatch(ST_DONE);
+        syncTimer(true); // a timer set by this request opens its countdown on the watch
         if (s.speak && canSpeak) { startSpeech(s, reply); }
       },
       onError: function (msg) { current = null; sendError(msg); }
@@ -136,8 +139,19 @@ function handleAsk(text, canSpeak) {
   );
 }
 
+/* ---- timer: the server/HA own it; the watch keeps a local copy and just re-syncs ---- */
+function syncTimer(open) {
+  var s = getSettings();
+  if (!s.token) { return; }
+  timerSync.fetchTimer({ request: request },
+    { serverUrl: s.serverUrl, token: s.token, open: open, normalize: leela.normalizeText },
+    function (msg) { enqueue(msg); });
+}
+setInterval(function () { syncTimer(false); }, TIMER_POLL_MS);
+
 Pebble.addEventListener('ready', function () {
   toWatch(ST_READY);
+  syncTimer(false);
 });
 
 Pebble.addEventListener('appmessage', function (e) {

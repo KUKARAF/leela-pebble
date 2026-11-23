@@ -81,3 +81,20 @@ With "Speak replies" on, after the text reply is on screen PKJS asks the server 
 - If the server splits a chunk in the middle of a multi-byte character the JSON already contains a replacement character; the app cannot repair that.
 - No history; the reply is lost when the app is closed.
 - The emulator has no voice service, so the full dictation flow has to be tested on a real watch.
+
+
+## Timers
+
+Say "set a timer for 20 minutes" (optionally "for pasta"). The chat server starts a Home Assistant timer
+and remembers it; after every ask, and about once a minute while Leela is open, the phone fetches
+`GET /api/pebble/timer` and relays it to the watch. The watch keeps its own copy (persisted), so the
+countdown keeps running with no connection.
+
+- The countdown screen is the Timer+ face (`src/c/timerplus`, MIT, (c) Eric Phillips / Ycleptic Studios,
+  https://github.com/YclepticStudios/pebble-timer-plus; licence in `licenses/`, Bebas Neue font is OFL).
+- A timer you just set opens its countdown automatically. Hold SELECT on the main screen to reopen it,
+  BACK to leave it.
+- Leela schedules wakeups (90 seconds before the end, and at the end) so it reopens and vibrates even if
+  you closed it. Any button stops the alarm.
+- Display only: start/cancel timers by voice. A timer cancelled or changed in Home Assistant shows up
+  on the next sync.
